@@ -1,0 +1,108 @@
+name: WinNative Release
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "master" ]
+    paths-ignore:
+      - '**.md'
+      - 'tools/**'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: winnative-release
+  cancel-in-progress: true
+
+env:
+  RELEASE_TAG: winnative-latest
+
+jobs:
+  release:
+    name: Build and publish latest release
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Java 11
+        uses: actions/setup-java@v4
+        with:
+          java-version: '11'
+          distribution: 'temurin'
+
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v4
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build and publish to local Maven repository
+        run: ./gradlew build publishToMavenLocal -x signMavenJavaPublication
+
+      - name: Package release artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p dist/staging/jars
+
+          find . -path '*/build/libs/*.jar' -type f -print0 |
+            while IFS= read -r -d '' jar; do
+              rel="${jar#./}"
+              module="${rel%%/build/libs/*}"
+              if [[ "$module" == "$rel" ]]; then
+                module="javasteam"
+              fi
+              mkdir -p "dist/staging/jars/$module"
+              cp "$jar" "dist/staging/jars/$module/"
+            done
+
+          mkdir -p dist/staging/maven-repository/in
+          cp -R "$HOME/.m2/repository/in/dragonbra" dist/staging/maven-repository/in/
+
+          (
+            cd dist/staging/jars
+            zip -r ../../javasteam-jars.zip .
+          )
+
+          (
+            cd dist/staging/maven-repository
+            zip -r ../../javasteam-maven-repository.zip .
+          )
+
+          {
+            echo "# WinNative JavaSteam CI build"
+            echo
+            echo "- Commit: ${GITHUB_SHA}"
+            echo "- Built by: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo
+            echo "Assets:"
+            echo "- javasteam-jars.zip: compiled jar, source jar, and javadoc jar outputs grouped by module."
+            echo "- javasteam-maven-repository.zip: Maven repository layout for the in.dragonbra artifacts."
+          } > dist/release-notes.md
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: javasteam-release
+          path: |
+            dist/javasteam-jars.zip
+            dist/javasteam-maven-repository.zip
+
+      - name: Publish GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          gh release delete "$RELEASE_TAG" --cleanup-tag --yes || true
+          gh release create "$RELEASE_TAG" \
+            dist/javasteam-jars.zip \
+            dist/javasteam-maven-repository.zip \
+            --target "$GITHUB_SHA" \
+            --title "WinNative JavaSteam latest (${GITHUB_SHA::7})" \
+            --notes-file dist/release-notes.md \
+            --latest
