@@ -17,6 +17,8 @@ concurrency:
 
 env:
   RELEASE_TAG: winnative-latest
+  GROUP_ID: in.dragonbra
+  VERSION: 1.8.1-SNAPSHOT
 
 jobs:
   release:
@@ -38,15 +40,16 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Build and publish to local Maven repository
-        run: ./gradlew build publishToMavenLocal -x signMavenJavaPublication
+      - name: Build artifacts and POMs
+        run: ./gradlew build generatePomFileForMavenJavaPublication -x signMavenJavaPublication
 
       - name: Package release artifacts
         shell: bash
         run: |
           set -euo pipefail
 
-          mkdir -p dist/staging/jars
+          mkdir -p dist/staging/jars dist/staging/maven-repository
+          group_path="${GROUP_ID//.//}"
 
           find . -path '*/build/libs/*.jar' -type f -print0 |
             while IFS= read -r -d '' jar; do
@@ -57,10 +60,26 @@ jobs:
               fi
               mkdir -p "dist/staging/jars/$module"
               cp "$jar" "dist/staging/jars/$module/"
+
+              artifact="$module"
+              target_dir="dist/staging/maven-repository/$group_path/$artifact/$VERSION"
+              mkdir -p "$target_dir"
+              cp "$jar" "$target_dir/"
             done
 
-          mkdir -p dist/staging/maven-repository/in
-          cp -R "$HOME/.m2/repository/in/dragonbra" dist/staging/maven-repository/in/
+          find . -path '*/build/publications/mavenJava/pom-default.xml' -type f -print0 |
+            while IFS= read -r -d '' pom; do
+              rel="${pom#./}"
+              module="${rel%%/build/publications/mavenJava/pom-default.xml}"
+              if [[ "$module" == "$rel" ]]; then
+                module="javasteam"
+              fi
+
+              artifact="$module"
+              target_dir="dist/staging/maven-repository/$group_path/$artifact/$VERSION"
+              mkdir -p "$target_dir"
+              cp "$pom" "$target_dir/$artifact-$VERSION.pom"
+            done
 
           (
             cd dist/staging/jars
