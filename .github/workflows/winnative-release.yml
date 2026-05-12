@@ -17,6 +17,7 @@ concurrency:
 
 env:
   RELEASE_TAG: winnative-latest
+  MAVEN_BRANCH: winnative-maven
   GROUP_ID: in.dragonbra
   VERSION: 1.8.1-SNAPSHOT
 
@@ -96,11 +97,46 @@ jobs:
             echo
             echo "- Commit: ${GITHUB_SHA}"
             echo "- Built by: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo "- Maven repo: https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${MAVEN_BRANCH}/"
             echo
             echo "Assets:"
             echo "- javasteam-jars.zip: compiled jar, source jar, and javadoc jar outputs grouped by module."
-            echo "- javasteam-maven-repository.zip: Maven repository layout for the in.dragonbra artifacts."
+            echo "- javasteam-maven-repository.zip: Maven repository layout for manual/offline use."
           } > dist/release-notes.md
+
+      - name: Publish unzipped Maven repository
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          publish_dir="${RUNNER_TEMP}/javasteam-maven-repository"
+          worktree_dir="${RUNNER_TEMP}/javasteam-maven-branch"
+          rm -rf "$publish_dir" "$worktree_dir"
+          mkdir -p "$publish_dir"
+          cp -R dist/staging/maven-repository/. "$publish_dir/"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin "$MAVEN_BRANCH" || true
+
+          if git show-ref --verify --quiet "refs/remotes/origin/$MAVEN_BRANCH"; then
+            git worktree add "$worktree_dir" "origin/$MAVEN_BRANCH"
+          else
+            git worktree add --detach "$worktree_dir"
+            git -C "$worktree_dir" checkout --orphan "$MAVEN_BRANCH"
+          fi
+
+          find "$worktree_dir" -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+          cp -R "$publish_dir"/. "$worktree_dir"/
+          touch "$worktree_dir/.nojekyll"
+
+          git -C "$worktree_dir" add -A
+          if git -C "$worktree_dir" diff --cached --quiet; then
+            echo "Maven repository is already up to date."
+          else
+            git -C "$worktree_dir" commit -m "Publish JavaSteam Maven artifacts for ${GITHUB_SHA}"
+            git -C "$worktree_dir" push origin "HEAD:$MAVEN_BRANCH"
+          fi
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
