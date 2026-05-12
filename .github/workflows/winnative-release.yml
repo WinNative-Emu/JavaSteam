@@ -44,53 +44,36 @@ jobs:
       - name: Build artifacts and POMs
         run: ./gradlew build generatePomFileForMavenJavaPublication -x signMavenJavaPublication
 
-      - name: Package release artifacts
+      - name: Stage Maven repository and release assets
         shell: bash
         run: |
           set -euo pipefail
 
-          mkdir -p dist/staging/jars dist/staging/maven-repository
+          mkdir -p dist/staging/maven-repository dist/release-assets
           group_path="${GROUP_ID//.//}"
+          modules=(
+            ".:javasteam"
+            "javasteam-cs:javasteam-cs"
+            "javasteam-deadlock:javasteam-deadlock"
+            "javasteam-depotdownloader:javasteam-depotdownloader"
+            "javasteam-dota2:javasteam-dota2"
+            "javasteam-tf:javasteam-tf"
+          )
 
-          find . -path '*/build/libs/*.jar' -type f -print0 |
-            while IFS= read -r -d '' jar; do
-              rel="${jar#./}"
-              module="${rel%%/build/libs/*}"
-              if [[ "$module" == "$rel" ]]; then
-                module="javasteam"
-              fi
-              mkdir -p "dist/staging/jars/$module"
-              cp "$jar" "dist/staging/jars/$module/"
+          for module_entry in "${modules[@]}"; do
+            module_dir="${module_entry%%:*}"
+            artifact="${module_entry##*:}"
+            target_dir="dist/staging/maven-repository/$group_path/$artifact/$VERSION"
+            mkdir -p "$target_dir"
 
-              artifact="$module"
-              target_dir="dist/staging/maven-repository/$group_path/$artifact/$VERSION"
-              mkdir -p "$target_dir"
+            cp "$module_dir/build/publications/mavenJava/pom-default.xml" "$target_dir/$artifact-$VERSION.pom"
+            cp "$target_dir/$artifact-$VERSION.pom" dist/release-assets/
+
+            for jar in "$module_dir"/build/libs/*.jar; do
               cp "$jar" "$target_dir/"
+              cp "$jar" dist/release-assets/
             done
-
-          find . -path '*/build/publications/mavenJava/pom-default.xml' -type f -print0 |
-            while IFS= read -r -d '' pom; do
-              rel="${pom#./}"
-              module="${rel%%/build/publications/mavenJava/pom-default.xml}"
-              if [[ "$module" == "$rel" ]]; then
-                module="javasteam"
-              fi
-
-              artifact="$module"
-              target_dir="dist/staging/maven-repository/$group_path/$artifact/$VERSION"
-              mkdir -p "$target_dir"
-              cp "$pom" "$target_dir/$artifact-$VERSION.pom"
-            done
-
-          (
-            cd dist/staging/jars
-            zip -r ../../javasteam-jars.zip .
-          )
-
-          (
-            cd dist/staging/maven-repository
-            zip -r ../../javasteam-maven-repository.zip .
-          )
+          done
 
           {
             echo "# WinNative JavaSteam CI build"
@@ -99,9 +82,7 @@ jobs:
             echo "- Built by: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
             echo "- Maven repo: https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${MAVEN_BRANCH}/"
             echo
-            echo "Assets:"
-            echo "- javasteam-jars.zip: compiled jar, source jar, and javadoc jar outputs grouped by module."
-            echo "- javasteam-maven-repository.zip: Maven repository layout for manual/offline use."
+            echo "Release assets are uploaded as individual JAR and POM files. Gradle should use the Maven repo URL above."
           } > dist/release-notes.md
 
       - name: Publish unzipped Maven repository
@@ -142,9 +123,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: javasteam-release
-          path: |
-            dist/javasteam-jars.zip
-            dist/javasteam-maven-repository.zip
+          path: dist/release-assets/*
 
       - name: Publish GitHub release
         shell: bash
@@ -155,8 +134,7 @@ jobs:
 
           gh release delete "$RELEASE_TAG" --cleanup-tag --yes || true
           gh release create "$RELEASE_TAG" \
-            dist/javasteam-jars.zip \
-            dist/javasteam-maven-repository.zip \
+            dist/release-assets/* \
             --target "$GITHUB_SHA" \
             --title "WinNative JavaSteam latest (${GITHUB_SHA::7})" \
             --notes-file dist/release-notes.md \
